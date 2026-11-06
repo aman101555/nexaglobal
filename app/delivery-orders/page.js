@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { dubaiDate } from '@/lib/format';
+import DirectDelivery from '@/components/DirectDelivery';
 
 export default function DeliveryOrders() {
   const [quotes, setQuotes] = useState([]);
@@ -13,11 +14,15 @@ export default function DeliveryOrders() {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(null);
   const [cutover, setCutover] = useState(null);   // when stock deduction moved from quotations to delivery orders
+  const [direct, setDirect] = useState(false);     // Direct Delivery panel open
 
-  useEffect(() => {
+  const loadQuotes = () =>
     supabase.from('quotations').select('id, quotation_no, created_at, customers(company_name)')
       .order('created_at', { ascending: false })
       .then(({ data }) => setQuotes(data || []));
+
+  useEffect(() => {
+    loadQuotes();
     supabase.from('inventory_logic_cutover').select('applied_at').limit(1)
       .then(({ data }) => setCutover(data && data[0] ? data[0].applied_at : null));
   }, []);
@@ -93,7 +98,11 @@ export default function DeliveryOrders() {
 
   return (
     <>
-      <h1>Delivery Orders</h1>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <h1>Delivery Orders</h1>
+        <button className="btn" onClick={() => setDirect(true)}>+ Direct Delivery</button>
+      </div>
+      {direct && <DirectDelivery onClose={() => setDirect(false)} onCreated={() => { setDirect(false); loadQuotes(); }} />}
       <div className="card" style={{ overflowX: 'auto' }}>
         <input placeholder="Search by quote no. or customer…" value={search} onChange={(e) => setSearch(e.target.value)} style={{ marginBottom: 12, maxWidth: 360 }} />
         <table>

@@ -3,6 +3,7 @@ import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { money, round2, PAYMENT_OPTIONS } from '@/lib/format';
+import CustomerSelect, { QUICK, EMPTY_QUICK, saveQuickCustomer } from '@/components/CustomerSelect';
 
 let keySeq = 0;
 
@@ -10,6 +11,7 @@ export default function NewQuotation() {
   const [customers, setCustomers] = useState([]);
   const [inventory, setInventory] = useState([]);
   const [customerId, setCustomerId] = useState('');
+  const [quick, setQuick] = useState(EMPTY_QUICK);
   const [nextNo, setNextNo] = useState('…');
   const [lines, setLines] = useState([]);
   const [payOpt, setPayOpt] = useState('1');
@@ -47,6 +49,12 @@ export default function NewQuotation() {
       key: ++keySeq, inventory_id: inv.id, description: inv.description, stock: inv.quantity,
       quantity: 1, unit_price: Number(inv.unit_rate), days: '', editDesc: false, editPrice: false,
     }]);
+  // manual (non-inventory) line: not linked to inventory, stock is free text
+  const addCustom = () =>
+    setLines((l) => [...l, {
+      key: ++keySeq, inventory_id: null, custom: true, description: '', stock: undefined, stock_text: '',
+      quantity: 1, unit_price: '', days: '', editDesc: false, editPrice: false,
+    }]);
   const patch = (key, p) => setLines((l) => l.map((x) => (x.key === key ? { ...x, ...p } : x)));
   const remove = (key) => setLines((l) => l.filter((x) => x.key !== key));
 
@@ -71,18 +79,29 @@ export default function NewQuotation() {
     if (!customerId) return toast('Please select a customer.', true);
     if (!lines.length) return toast('Add at least one item.', true);
     for (const [i, x] of lines.entries()) {
+      if (x.custom && !String(x.description).trim()) return toast(`Row ${i + 1}: enter a description.`, true);
       if (!(Number(x.quantity) > 0)) return toast(`Row ${i + 1}: enter a quantity.`, true);
+      if (x.custom && !(Number(x.unit_price) >= 0 && String(x.unit_price).trim() !== '')) return toast(`Row ${i + 1}: enter a unit price.`, true);
       if (calc(x).over && !String(x.days).trim()) return toast(`Row ${i + 1}: enter the delivery days (stock is short).`, true);
     }
     if (!paymentText) return toast('Enter the custom payment terms.', true);
 
     setSaving(true);
+    let custId = customerId;
+    if (customerId === QUICK) {                       // quick customer → saved into the official customer list
+      const r = await saveQuickCustomer(quick);
+      if (r.error) { setSaving(false); return toast(r.error, true); }
+      custId = r.customer.id;
+      setCustomers((c) => [...c, r.customer]);
+      setCustomerId(custId); setQuick(EMPTY_QUICK);
+    }
     const { data, error } = await supabase.rpc('create_quotation', {
-      p_customer_id: customerId,
+      p_customer_id: custId,
       p_payment: paymentText,
       p_items: lines.map((x) => ({
         inventory_id: x.inventory_id, description: x.description,
         quantity: Number(x.quantity), unit_price: Number(x.unit_price), days: String(x.days || ''),
+        stock_text: x.custom ? String(x.stock_text || '').trim() : '',
       })),
     });
     setSaving(false);
@@ -116,10 +135,7 @@ export default function NewQuotation() {
       <div className="card grid g2">
         <div>
           <label>Customer *</label>
-          <select value={customerId} onChange={(e) => setCustomerId(e.target.value)}>
-            <option value="">— Select customer —</option>
-            {customers.map((c) => <option key={c.id} value={c.id}>{c.company_name} – {c.customer_name}</option>)}
-          </select>
+          <CustomerSelect customers={customers} value={customerId} onChange={setCustomerId} quick={quick} setQuick={setQuick} />
         </div>
         <div>
           <label>Quotation number (auto)</label>
@@ -130,7 +146,10 @@ export default function NewQuotation() {
       <div className="card" style={{ overflowX: 'auto' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 10 }}>
           <h2>Items</h2>
-          <button className="btn" onClick={() => { setSearch(''); setPicker(true); }}>＋ Add from Inventory</button>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn ghost" onClick={addCustom}>(+) Add Custom Item</button>
+            <button className="btn" onClick={() => { setSearch(''); setPicker(true); }}>＋ Add from Inventory</button>
+          </div>
         </div>
         <table>
           <thead>
@@ -144,21 +163,27 @@ export default function NewQuotation() {
                 <tr key={x.key}>
                   <td>{i + 1}</td>
                   <td>
-                    {x.editDesc ? (
+                    {x.custom ? (
+                      <textarea className="cellin" rows={2} placeholder="Custom item description…" value={x.description}
+                        onChange={(e) => patch(x.key, { description: e.target.value })} />
+                    ) : x.editDesc ? (
                       <textarea className="cellin" rows={2} autoFocus value={x.description}
                         onChange={(e) => patch(x.key, { description: e.target.value })}
                         onBlur={() => patch(x.key, { editDesc: false })} />
                     ) : (
                       <>{x.description}<button className="pencil" title="Edit description" onClick={() => patch(x.key, { editDesc: true })}>✏️</button></>
                     )}
-                    <div className="mut">Available stock: {x.stock}</div>
+                    {!x.custom && <div className="mut">Available stock: {x.stock}</div>}
                   </td>
                   <td>
                     <input type="number" min="1" className={'cellin num' + (c.over ? ' red' : '')} style={{ width: 80 }}
                       value={x.quantity} onChange={(e) => patch(x.key, { quantity: e.target.value })} />
                   </td>
                   <td className="r">
-                    {x.editPrice ? (
+                    {x.custom ? (
+                      <input type="number" min="0" step="0.01" className="cellin num" placeholder="0.00" value={x.unit_price}
+                        onChange={(e) => patch(x.key, { unit_price: e.target.value })} />
+                    ) : x.editPrice ? (
                       <input type="number" min="0" step="0.01" className="cellin num" autoFocus value={x.unit_price}
                         onChange={(e) => patch(x.key, { unit_price: e.target.value })}
                         onBlur={() => patch(x.key, { editPrice: false })} />
@@ -169,7 +194,10 @@ export default function NewQuotation() {
                   <td className="r">{money(c.vat)}</td>
                   <td className="r"><b>{money(c.total)}</b></td>
                   <td>
-                    {c.over ? (
+                    {x.custom ? (
+                      <input className="cellin" style={{ width: 110 }} placeholder="--" value={x.stock_text}
+                        onChange={(e) => patch(x.key, { stock_text: e.target.value })} />
+                    ) : c.over ? (
                       <span><input type="number" min="1" className="cellin num" style={{ width: 64 }} placeholder="__"
                         value={x.days} onChange={(e) => patch(x.key, { days: e.target.value })} /> Days</span>
                     ) : <span className="badge">EX STOCK</span>}
